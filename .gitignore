@@ -1,3 +1,14 @@
+# Python
 *.pyc
 __pycache__/
 .DS_Store
+
+# Generated images and data
+video_processing/output/
+mesh_generation/output/
+Scaling/output/
+
+# Input data
+video_processing/input/*.mp4
+mesh_generation/input/*
+Scaling/input/*
