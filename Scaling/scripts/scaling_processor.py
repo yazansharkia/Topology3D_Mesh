@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
 
+"""
+A4 Paper Detection and Parameter Extraction Script
+
+This script processes images containing A4 paper to:
+1. Detect the A4 paper in the image
+2. Calculate distortion parameters
+3. Save the parameters for use in foot measurement
+
+The output parameters are used by the foot_measurement.py script to calculate
+accurate foot measurements.
+"""
+
 import os
 import sys
 import logging
@@ -17,11 +29,11 @@ logger = logging.getLogger(__name__)
 class ScalingProcessor:
     def __init__(self, input_dir: str, output_dir: str):
         """
-        Initialize the ScalingProcessor.
+        Initialize the ScalingProcessor for A4 paper detection.
         
         Args:
-            input_dir (str): Path to the input directory
-            output_dir (str): Path to the output directory
+            input_dir (str): Path to the input directory containing images with A4 paper
+            output_dir (str): Path to the output directory for parameters
         """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
@@ -36,8 +48,8 @@ class ScalingProcessor:
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Initialized ScalingProcessor with input_dir: {input_dir}")
-        logger.info(f"Output will be saved to: {output_dir}")
+        logger.info(f"Initialized A4 Paper Detection with input_dir: {input_dir}")
+        logger.info(f"Parameters will be saved to: {output_dir}")
 
     def preprocess_image(self, image):
         """
@@ -211,6 +223,111 @@ class ScalingProcessor:
         
         return contour, lines, distortion_params, debug_steps
 
+    def detect_foot(self, image, paper_contour):
+        """
+        Detect the foot in the image.
+        
+        Args:
+            image: Input image
+            paper_contour: Contour of the A4 paper
+            
+        Returns:
+            tuple: (foot_contour, debug_image) containing the foot contour and a debug image
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Apply adaptive thresholding to separate foot from background
+        binary = cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            11,
+            2
+        )
+        
+        # Create a mask for the paper area
+        paper_mask = np.zeros_like(binary)
+        cv2.drawContours(paper_mask, [paper_contour], -1, 255, -1)
+        
+        # Apply the mask to keep only the paper area
+        masked_binary = cv2.bitwise_and(binary, paper_mask)
+        
+        # Find contours
+        contours, _ = cv2.findContours(masked_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return None, None
+            
+        # Find the largest contour that's not the paper
+        foot_contour = None
+        max_area = 0
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > max_area and area < cv2.contourArea(paper_contour) * 0.9:
+                max_area = area
+                foot_contour = contour
+        
+        if foot_contour is None:
+            return None, None
+            
+        # Create debug image
+        debug_image = image.copy()
+        cv2.drawContours(debug_image, [foot_contour], -1, (0, 255, 0), 2)
+        
+        return foot_contour, debug_image
+
+    def calculate_foot_measurements(self, foot_contour, distortion_params):
+        """
+        Calculate the actual foot measurements in millimeters.
+        
+        Args:
+            foot_contour: Contour of the foot
+            distortion_params: Distortion parameters from A4 paper
+            
+        Returns:
+            dict: Foot measurements in millimeters
+        """
+        # Get the minimum area rectangle
+        rect = cv2.minAreaRect(foot_contour)
+        box = cv2.boxPoints(rect)
+        box = np.int32(box)
+        
+        # Calculate the width and height in pixels
+        width_px = rect[1][0]
+        height_px = rect[1][1]
+        
+        # Get the rotation angle
+        angle = rect[2]
+        
+        # Calculate the scaling factor based on A4 paper dimensions
+        # We use the shorter dimension of A4 (210mm) as reference
+        scaling_factor = self.A4_WIDTH / min(width_px, height_px)
+        
+        # Apply distortion correction
+        corrected_width = width_px * scaling_factor / distortion_params['distortion']
+        corrected_height = height_px * scaling_factor / distortion_params['distortion']
+        
+        # Calculate the actual length and width
+        if width_px > height_px:
+            length_mm = corrected_width
+            width_mm = corrected_height
+        else:
+            length_mm = corrected_height
+            width_mm = corrected_width
+        
+        return {
+            'length_mm': length_mm,
+            'width_mm': width_mm,
+            'angle_degrees': angle,
+            'scaling_factor': scaling_factor
+        }
+
     def process_image(self, image_path):
         """
         Process a single image to detect and scale the foot.
@@ -235,16 +352,27 @@ class ScalingProcessor:
             
         contour, lines, distortion_params, debug_steps = paper_detection
         
+        # Detect foot
+        foot_contour, foot_debug = self.detect_foot(image, contour)
+        if foot_contour is None:
+            logger.error(f"Could not detect foot in image: {image_path}")
+            return None
+            
+        # Calculate foot measurements
+        foot_measurements = self.calculate_foot_measurements(foot_contour, distortion_params)
+        
         # Create debug image
         debug_image = image.copy()
-        cv2.drawContours(debug_image, [contour], -1, (0, 255, 0), 2)
+        cv2.drawContours(debug_image, [contour], -1, (0, 255, 0), 2)  # Paper contour
+        cv2.drawContours(debug_image, [foot_contour], -1, (0, 0, 255), 2)  # Foot contour
         
         # Draw lines
         for line in lines:
-            cv2.line(debug_image, tuple(line[0]), tuple(line[1]), (0, 0, 255), 2)
+            cv2.line(debug_image, tuple(line[0]), tuple(line[1]), (255, 0, 0), 2)
             
         return {
             'distortion_params': distortion_params,
+            'foot_measurements': foot_measurements,
             'lines': lines
         }, debug_image, debug_steps
 
@@ -279,7 +407,13 @@ class ScalingProcessor:
                 f.write(f"Distortion parameters:\n")
                 f.write(f"Aspect ratio: {measurements['distortion_params']['aspect_ratio']:.2f}\n")
                 f.write(f"Distortion factor: {measurements['distortion_params']['distortion']:.2f}\n")
-                f.write(f"Angles: {measurements['distortion_params']['angles']}\n")
+                f.write(f"Angles: {measurements['distortion_params']['angles']}\n\n")
+                
+                f.write(f"Foot measurements:\n")
+                f.write(f"Length: {measurements['foot_measurements']['length_mm']:.1f} mm\n")
+                f.write(f"Width: {measurements['foot_measurements']['width_mm']:.1f} mm\n")
+                f.write(f"Angle: {measurements['foot_measurements']['angle_degrees']:.1f} degrees\n")
+                f.write(f"Scaling factor: {measurements['foot_measurements']['scaling_factor']:.3f} mm/pixel\n")
         
         logger.info("Scaling process completed.")
 
@@ -288,7 +422,7 @@ def main():
     project_root = Path(__file__).parent.parent.parent
     
     # Define input and output directories
-    input_dir = project_root / "Scaling" / "input"
+    input_dir = project_root / "Scaling" / "input"  # Directory for A4 paper detection
     output_dir = project_root / "Scaling" / "output"
     
     # Create and run the processor
