@@ -4,11 +4,16 @@ __pycache__/
 .DS_Store
 
 # Generated images and data
-video_processing/output/
-mesh_generation/output/
-Scaling/output/
+video_processing/output/*
+Scaling/output/*
 
 # Input data
 video_processing/input/*.mp4
-mesh_generation/input/*
 Scaling/input/*
+
+
+!video_processing/output/.keep
+!Scaling/output/.keep
+
+!video_processing/input/.keep
+!Scaling/input/.keep
